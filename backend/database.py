@@ -151,6 +151,7 @@ def init_db():
             id              INT PRIMARY KEY AUTO_INCREMENT,
             article_id      INT NOT NULL,
             paragraph_index INT DEFAULT 0,
+            sentence_index  INT DEFAULT NULL,
             mode            VARCHAR(10) DEFAULT 'full',
             level           INT DEFAULT 1,
             total_words     INT DEFAULT 0,
@@ -182,5 +183,9 @@ def init_db():
             conn.execute(f"ALTER TABLE words ADD COLUMN {col}")
         except:
             pass
+    try:
+        conn.execute("ALTER TABLE voice_practices ADD COLUMN sentence_index INT DEFAULT NULL AFTER paragraph_index")
+    except:
+        pass
     conn.commit()
     conn.close()

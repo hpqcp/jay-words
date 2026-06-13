@@ -1,10 +1,17 @@
 import re
-import random
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 from database import get_connection
 
 router = APIRouter(prefix="/api", tags=["articles"])
+
+LEVEL_CONFIG = {
+    1: {"label": "跟读", "description": "全文可见", "ratio": 0, "first_per_sentence": False, "hide_all": False},
+    2: {"label": "简单", "description": "每句隐藏 1 词", "ratio": 0, "first_per_sentence": True, "hide_all": False},
+    3: {"label": "普通", "description": "每句隐藏 30%", "ratio": 0.3, "first_per_sentence": False, "hide_all": False},
+    4: {"label": "困难", "description": "每句隐藏 70%", "ratio": 0.7, "first_per_sentence": False, "hide_all": False},
+    5: {"label": "默写", "description": "全文隐藏", "ratio": 1, "first_per_sentence": False, "hide_all": True},
+}
 
 class ArticleCreate(BaseModel):
     title: str
@@ -49,6 +56,49 @@ def select_hidden_indices(token_count, ratio):
         idx = min(int(i * step + step / 2), token_count - 1)
         selected.add(idx)
     return sorted(selected)
+
+def is_word_token(token, language):
+    token = (token or "").strip()
+    if not token:
+        return False
+    if language == "zh":
+        return bool(re.search(r"[\u4e00-\u9fffA-Za-z0-9]", token))
+    return bool(re.fullmatch(r"\w+(?:'\w+)?", token))
+
+def is_sentence_end(token):
+    return bool(re.search(r"[。！？.!?\n]$", token or ""))
+
+def select_level_hidden_indices(tokens, language, level):
+    config = LEVEL_CONFIG[level]
+    word_indices = [i for i, t in enumerate(tokens) if is_word_token(t, language)]
+    if not word_indices:
+        return []
+    if config["hide_all"]:
+        return word_indices
+    if config["ratio"] <= 0 and not config["first_per_sentence"]:
+        return []
+
+    sentence_words = []
+    current = []
+    for i, token in enumerate(tokens):
+        if is_word_token(token, language):
+            current.append(i)
+        if is_sentence_end(token):
+            if current:
+                sentence_words.append(current)
+                current = []
+    if current:
+        sentence_words.append(current)
+
+    hidden = set()
+    for group in sentence_words:
+        if config["first_per_sentence"]:
+            hidden.add(group[0])
+            continue
+        selected = select_hidden_indices(len(group), config["ratio"])
+        for idx in selected:
+            hidden.add(group[idx])
+    return sorted(hidden)
 
 @router.get("/articles")
 def list_articles():
@@ -119,16 +169,13 @@ def get_recite_data(article_id: int, level: int = 1):
         raise HTTPException(404, "Article not found")
 
     paragraphs = split_paragraphs(article["content"])
-    hide_ratio = level * 0.2
     result_paragraphs = []
 
     for pi, para_text in enumerate(paragraphs):
         tokens = tokenize(para_text, article["language"])
         if not tokens:
             continue
-        word_indices = [i for i, t in enumerate(tokens) if re.match(r'\w+(?:\'\w+)?', t) and t.strip()]
-        hidden_indices = select_hidden_indices(len(word_indices), hide_ratio)
-        hidden_indices = [word_indices[i] for i in hidden_indices]
+        hidden_indices = select_level_hidden_indices(tokens, article["language"], level)
 
         progress = conn.execute(
             "SELECT level, completed FROM article_practices WHERE article_id=? AND paragraph_index=? AND level=? ORDER BY created_at DESC LIMIT 1",
@@ -159,6 +206,7 @@ def get_recite_data(article_id: int, level: int = 1):
         "content": article["content"],
         "paragraphs": result_paragraphs,
         "level": level,
+        "level_config": LEVEL_CONFIG[level],
         "stats": dict(overall_stats)
     }
 
@@ -189,6 +237,7 @@ def get_article_progress(article_id: int):
 
 class VoicePracticeSubmit(BaseModel):
     paragraph_index: int
+    sentence_index: int | None = None
     mode: str = "full"
     level: int = 1
     total_words: int = 0
@@ -201,8 +250,8 @@ class VoicePracticeSubmit(BaseModel):
 def submit_voice_practice(article_id: int, data: VoicePracticeSubmit):
     conn = get_connection()
     conn.execute(
-        "INSERT INTO voice_practices (article_id, paragraph_index, mode, level, total_words, correct_words, accuracy, duration_ms) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-        (article_id, data.paragraph_index, data.mode, data.level, data.total_words, data.correct_words, data.accuracy, data.duration_ms)
+        "INSERT INTO voice_practices (article_id, paragraph_index, sentence_index, mode, level, total_words, correct_words, accuracy, duration_ms) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (article_id, data.paragraph_index, data.sentence_index, data.mode, data.level, data.total_words, data.correct_words, data.accuracy, data.duration_ms)
     )
     conn.commit()
     row = conn.execute("SELECT * FROM voice_practices WHERE id = LAST_INSERT_ID()").fetchone()
@@ -216,8 +265,55 @@ def submit_voice_practice(article_id: int, data: VoicePracticeSubmit):
 def get_voice_progress(article_id: int):
     conn = get_connection()
     rows = conn.execute(
-        "SELECT paragraph_index, mode, level, MAX(accuracy) as accuracy, COUNT(*) as attempts FROM voice_practices WHERE article_id=? GROUP BY paragraph_index, mode, level",
-        (article_id,)
+        """
+        SELECT vp.paragraph_index, vp.mode, vp.level,
+               MAX(vp.accuracy) as best_accuracy,
+               COUNT(*) as attempts,
+               MIN(CASE WHEN vp.accuracy = best_per_group.best_accuracy THEN vp.duration_ms ELSE NULL END) as best_duration_ms,
+               MAX(vp.created_at) as last_practiced_at
+        FROM voice_practices vp
+        JOIN (
+            SELECT paragraph_index as bp, mode as bm, level as bl, MAX(accuracy) as best_accuracy
+            FROM voice_practices
+            WHERE article_id=? AND sentence_index IS NULL
+            GROUP BY paragraph_index, mode, level
+        ) best_per_group
+          ON best_per_group.bp = vp.paragraph_index
+         AND best_per_group.bm = vp.mode
+         AND best_per_group.bl = vp.level
+        WHERE vp.article_id=? AND vp.sentence_index IS NULL
+        GROUP BY vp.paragraph_index, vp.mode, vp.level
+        """,
+        (article_id, article_id)
     ).fetchall()
+
+    latest_rows = conn.execute(
+        """
+        SELECT vp.paragraph_index, vp.mode, vp.level, vp.accuracy as latest_accuracy
+        FROM voice_practices vp
+        JOIN (
+            SELECT paragraph_index, mode, level, MAX(created_at) as latest_at
+            FROM voice_practices
+            WHERE article_id=? AND sentence_index IS NULL
+            GROUP BY paragraph_index, mode, level
+        ) latest
+          ON latest.paragraph_index = vp.paragraph_index
+         AND latest.mode = vp.mode
+         AND latest.level = vp.level
+         AND latest.latest_at = vp.created_at
+        WHERE vp.article_id=? AND vp.sentence_index IS NULL
+        """,
+        (article_id, article_id)
+    ).fetchall()
+    latest_map = {
+        (r["paragraph_index"], r["mode"], r["level"]): r["latest_accuracy"]
+        for r in latest_rows
+    }
     conn.close()
-    return [dict(r) for r in rows]
+    result = []
+    for r in rows:
+        item = dict(r)
+        item["latest_accuracy"] = latest_map.get((r["paragraph_index"], r["mode"], r["level"]), r["best_accuracy"])
+        item["accuracy"] = item["best_accuracy"]
+        result.append(item)
+    return result
