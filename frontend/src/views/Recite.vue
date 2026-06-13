@@ -18,7 +18,7 @@
           <button class="btn-ghost" :disabled="level <= 1" @click="changeLevel(-1)">−</button>
           <span class="level-badge">Level {{ level }} · {{ levelLabels[level] }}</span>
           <button class="btn-ghost" :disabled="level >= 5" @click="changeLevel(1)">+</button>
-          <span class="hide-info">隐藏 {{ level * 20 }}%</span>
+          <span class="hide-info">{{ levelDesc[level] }}</span>
         </div>
       </div>
 
@@ -189,6 +189,7 @@
 import { ref, computed, onMounted, nextTick, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { api } from '../api/index.js'
+import { LEVEL_CONFIG } from '../utils/voiceRecite.js'
 
 export default {
   name: 'Recite',
@@ -206,7 +207,8 @@ export default {
     const showDraftRestore = ref(false)
     const savedDraftPara = ref(0)
 
-    const levelLabels = { 1: '简单', 2: '普通', 3: '困难', 4: '挑战', 5: '默写' }
+    const levelLabels = Object.fromEntries(Object.entries(LEVEL_CONFIG).map(([k, v]) => [k, v.label]))
+    const levelDesc = Object.fromEntries(Object.entries(LEVEL_CONFIG).map(([k, v]) => [k, v.description]))
 
     const SpeechRecognitionAPI = window.SpeechRecognition || window.webkitSpeechRecognition
     const hasSpeech = !!SpeechRecognitionAPI
@@ -598,7 +600,7 @@ export default {
       phase, article, paragraphs, level, currentParaIdx,
       answers, results, submitted, draftSaved,
       showDraftRestore, savedDraftPara,
-      levelLabels, currentPara, blanksCount, filledCount,
+      levelLabels, levelDesc, currentPara, blanksCount, filledCount,
       correctCount, passed, doneCount,
       changeLevel, startPractice, backToOverview,
       handleEnter, handleTab, submitPractice, markUnsaved, saveDraft,
