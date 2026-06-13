@@ -1,0 +1,22 @@
+[
+  {
+    "grade": "六年级上册",
+    "lessons": [
+      {
+        "lesson": "Unit 1 - Hobby",
+        "sections": [
+          {
+            "section": "Words",
+            "words": [
+              {"english": "swimming", "chinese": "游泳", "phonetic": "/ˈswɪmɪŋ/"},
+              {"english": "reading", "chinese": "阅读", "phonetic": "/ˈriːdɪŋ/"},
+              {"english": "painting", "chinese": "绘画", "phonetic": "/ˈpeɪntɪŋ/"},
+              {"english": "dancing", "chinese": "跳舞", "phonetic": "/ˈdænsɪŋ/"},
+              {"english": "singing", "chinese": "唱歌", "phonetic": "/ˈsɪŋɪŋ/"}
+            ]
+          }
+        ]
+      }
+    ]
+  }
+]
